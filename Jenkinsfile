@@ -8,6 +8,7 @@ docker_runs["conanio-gcc7"] = ["conanio/gcc7", "conanio-gcc7"]
 def organization = "demo-ci-conan"
 def user_channel = "demo/testing"
 def config_url = "https://github.com/demo-ci-conan/settings.git"
+def projects = ["App1/0.0@${user_channel}", "App2/0.0@${user_channel}", ]  // TODO: Get list dinamically
 
 def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, user_channel, config_url) {
     return {
@@ -141,7 +142,6 @@ node {
                     def repository = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
                     def sha1 = scmVars.GIT_COMMIT
 
-                    def projects = ["ui-board-imgui/0.0@${user_channel}", ]  // TODO: Get list dinamically
                     projects.each {project_id -> 
                         def json = """{"parameter": [{"name": "reference", "value": "${reference}"}, \
                                                 {"name": "project_id", "value": "${project_id}"}, \
