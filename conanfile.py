@@ -27,4 +27,4 @@ class LibC(ConanFile):
         self.copy("LICENSE", dst="licenses")
 
     def package_info(self):
-        self.cpp_info.libs = ["libA",]
+        self.cpp_info.libs = ["libC",]
