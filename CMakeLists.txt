@@ -9,7 +9,7 @@ file(GLOB HEADERS include/libC/*)
 
 add_library(libC ${SOURCES} ${HEADERS})
 set_target_properties(libC PROPERTIES CXX_STANDARD 17)
-target_link_libraries(libC PRIVATE libA)
+target_link_libraries(libC PRIVATE CONAN_PKG::libA)
 
 target_include_directories(
     libC PUBLIC
