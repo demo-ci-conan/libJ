@@ -21,6 +21,7 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
     return {
         node {
             docker.image(docker_image).inside("--net=docker_jenkins_artifactory") {
+                sh "pip install git+git://github.com/czoido/conan.git@hackaton_branch"
                 def scmVars = checkout scm
                 def repo_name = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
                 withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/conan_cache"]) {
@@ -100,6 +101,7 @@ node {
         }
         stage("Retrieve and publish build info") {
             docker.image("conanio/gcc8").inside("--net=docker_jenkins_artifactory") {
+                sh "pip install git+git://github.com/czoido/conan.git@hackaton_branch"
                 def server = Artifactory.server artifactory_name
                 def last_info = ""
                 docker_runs.each { id, values ->
