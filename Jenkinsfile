@@ -38,8 +38,6 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
                         }
 
                         client.run(command: "config install ${config_url}".toString())
-                        client.run(command: "config install -sf hooks -tf hooks https://github.com/conan-io/hooks.git")
-
                         client.remote.add server: server, repo: artifactory_repo, remoteName: remoteName, force: true
 
                         stage("${id}") {
@@ -49,7 +47,7 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
                         stage("Get dependencies and create app") {
                             String arguments = "--profile ${profile} --lockfile=${lockfile}"
                             client.run(command: "graph lock . ${arguments}".toString())
-                            client.run(command: "create . ${user_channel} ${arguments} --build missing".toString())
+                            client.run(command: "create . ${user_channel} ${arguments} --build ${repo_name} --ignore-dirty".toString())
                             sh "cat ${lockfile}"
                         }
 
@@ -120,45 +118,35 @@ node {
         }
 
         stage("Launch job-graph") {
-            docker.image("conanio/gcc8").inside("--net=docker_jenkins_artifactory") {
-                def scmVars = checkout scm
+            def scmVars = checkout scm
 
-                stage("Configure Conan client") {
-                    sh "conan config install ${config_url}".toString()
-                }
+            stage("Trigger dependents jobs") {
+                unstash "full_reference"
+                sh "cat search_output.json"
+                
+                def props = readJSON file: "search_output.json"
+                def revision = props[0]['revision']
+                def reference = "${name}/${version}@${user_channel}#${revision}"
+                echo "Full reference: '${reference}'"
 
-                stage("Trigger dependents jobs") {
-                    unstash "full_reference"
-                    sh "cat search_output.json"
-                    
-                    def props = readJSON file: "search_output.json"
-                    def revision = props[0]['revision']
-                    def reference = "${name}/${version}@${user_channel}#${revision}"
-                    echo "Full reference: '${reference}'"
-
-                    def repository = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
-                    def sha1 = scmVars.GIT_COMMIT
-                    projects.each {project_id -> 
-                        def json = """{"parameter": [{"name": "reference", "value": "${reference}"}, \
-                                                     {"name": "project_id", "value": "${project_id}"}, \
-                                                     {"name": "organization", "value": "${organization}"}, \
-                                                     {"name": "repository", "value": "${repository}"}, \
-                                                     {"name": "sha1", "value": "${sha1}"} \
-                                                     ]}"""
-                        withCredentials([usernamePassword(credentialsId: 'job-graph', passwordVariable: 'pass', usernameVariable: 'user')]) {
-                            // TODO: FIXME: user pass from credentials
-                            def jenkins_url = "jenkins:8080"
-                            def jenkins_user_token = "admin:1180edb4037ce3fb2dae7260d2cf4ddcb2"
-                            if (env.JENKINS_URL) {
-                                jenkins_url = "${env.JENKINS_URL}"
-                            }
-                            if (env.JENKINS_USER_TOKEN) {
-                                jenkins_user_token = "${env.JENKINS_USER_TOKEN}"
-                            }
-                            def url = "http://${jenkins_user_token}@${jenkins_url}/job/test_project/build"
-                            sh "curl -v POST ${url} --data-urlencode json='${json}'"
-                        }                            
-                    }
+                def repository = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
+                def sha1 = scmVars.GIT_COMMIT
+                projects.each {project_id -> 
+                    def json = """{"parameter": [{"name": "reference", "value": "${reference}"}, \
+                                                    {"name": "project_id", "value": "${project_id}"}, \
+                                                    {"name": "organization", "value": "${organization}"}, \
+                                                    {"name": "repository", "value": "${repository}"}, \
+                                                    {"name": "sha1", "value": "${sha1}"} \
+                                                    ]}"""
+                    withCredentials([usernamePassword(credentialsId: 'job-graph', passwordVariable: 'pass', usernameVariable: 'user')]) {
+                        // TODO: FIXME: user pass from credentials 
+                        def jenkins_user_token = "admin:1180edb4037ce3fb2dae7260d2cf4ddcb2"
+                        if (env.JENKINS_USER_TOKEN) {
+                            jenkins_user_token = "${env.JENKINS_USER_TOKEN}"
+                        }
+                        def url = "${env.JENKINS_URL}job/test_project/build"
+                        sh "curl -u ${jenkins_user_token} -v POST ${url} --data-urlencode json='${json}'"
+                    }                            
                 }
             }
         }
