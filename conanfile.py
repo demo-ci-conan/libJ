@@ -1,6 +1,6 @@
 from conans import ConanFile, CMake
 
-class LibC(ConanFile):
+class LibJ(ConanFile):
     name = "libJ"
     version = "0.0"
 
