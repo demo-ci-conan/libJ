@@ -1,5 +1,5 @@
 def artifactory_name = "Artifactory Docker"
-def artifactory_repo = "conan-local"
+def artifactory_repo = "hackathonv5-build"
 def docker_runs = [:]  // [id] = [docker_image, profile]
 
 docker_runs["conanio-gcc8"] = ["conanio/gcc8", "linux_gcc_8_x86_64"]
@@ -17,25 +17,31 @@ def user_channel = "demo/testing"
 def config_url = "https://github.com/demo-ci-conan/settings.git"
 def projects = ["App1/0.0@${user_channel}", "App2/0.0@${user_channel}", ]  // TODO: Get list dinamically
 
+String reference_revision = null
+String repository = null
+String sha1 = null
+
+def shell_quote(word) {
+  return "'" + word.replace("'", "'\\''") + "'"
+}
+
 def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, user_channel, config_url) {
     return {
         node {
-            docker.image(docker_image).inside("--net=docker_jenkins_artifactory") {
-                sh "pip install git+git://github.com/czoido/conan.git@hackaton_branch"
+            docker.image(docker_image).inside("--net=host") {
                 def scmVars = checkout scm
-                def repo_name = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
+                repository = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
+                sha1 = scmVars.GIT_COMMIT
                 withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/conan_cache"]) {
                     def server = Artifactory.server artifactory_name
                     def client = Artifactory.newConanClient(userHome: "${env.WORKSPACE}/conan_cache".toString())
                     def remoteName = "artifactory-local"
                     def lockfile = "${id}.lock"
                     try {
-
                         def buildInfo = Artifactory.newBuildInfo()
 
                         stage("Start build info") {
-                            String start_build_info = "conan_build_info --v2 start \"${buildInfo.getName()}\" ${buildInfo.getNumber()}"
-                            sh start_build_info
+                            sh "conan_build_info --v2 start ${shell_quote(buildInfo.getName())} ${shell_quote(buildInfo.getNumber())}"
                         }
 
                         client.run(command: "config install ${config_url}".toString())
@@ -48,7 +54,7 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
                         stage("Get dependencies and create app") {
                             String arguments = "--profile ${profile} --lockfile=${lockfile}"
                             client.run(command: "graph lock . ${arguments}".toString())
-                            client.run(command: "create . ${user_channel} ${arguments} --build ${repo_name} --ignore-dirty".toString())
+                            client.run(command: "create . ${user_channel} ${arguments} --build ${repository} --ignore-dirty".toString())
                             sh "cat ${lockfile}"
                         }
 
@@ -57,25 +63,27 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
                                 name = sh (script: "conan inspect . --raw name", returnStdout: true).trim()
                                 version = sh (script: "conan inspect . --raw version", returnStdout: true).trim()
                                 def search_output = "search_output.json"
-                                sh "conan search ${name}/${version}@${user_channel} --revisions --raw --json=${search_output}"
-                                stash name: "full_reference", includes: search_output
-                                sh "cat search_output.json"
+                                sh("""\
+conan search ${name}/${version}@${user_channel} --revisions --raw --json=${search_output}
+cat search_output.json
+""")
+                                def props = readJSON file: "search_output.json"
+                                reference_revision = props[0]['revision']
                             }
                         }
 
                         stage("Upload packages") {
-                            String uploadCommand = "upload ${repo_name}* --all -r ${remoteName} --confirm  --force"
+                            String uploadCommand = "upload ${repository} --all -r ${remoteName} --confirm  --force"
                             client.run(command: uploadCommand)
                         }
 
                         stage("Create build info") {
                             def buildInfoFilename = "${id}.json"
                             client.run(command: "search *".toString())
-                            // TODO: manage credentials
-                            String create_build_info = "conan_build_info --v2 create --lockfile ${lockfile} --user admin --password password ${buildInfoFilename}"
-                            sh create_build_info
-                            echo "Stash '${id}' -> '${buildInfoFilename}'"
-                            stash name: id, includes: "${buildInfoFilename}"
+                            withCredentials([usernamePassword(credentialsId: 'hack-tt-artifactory', usernameVariable: 'CONAN_LOGIN_USERNAME', passwordVariable: 'CONAN_PASSWORD')]) {
+                              sh "conan_build_info --v2 create --lockfile ${lockfile} --user \"\${CONAN_LOGIN_USERNAME}\" --password \"\${CONAN_PASSWORD}\" ${buildInfoFilename}"
+                            }
+                            return readJSON(file: buildInfoFilename)
                         }
                     }
                     finally {
@@ -87,74 +95,80 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
     }
 }
 
-def stages = [:]
-docker_runs.each { id, values ->
-    stages[id] = get_stages(id, values[0], artifactory_name, artifactory_repo, values[1], user_channel, config_url)
-}
 
-node {
-    try {
-        stage("Build + upload") {
-            withEnv(["CONAN_HOOK_ERROR_LEVEL=40"]) {
-                parallel stages
+pipeline {
+  agent none
+
+  stages {
+    stage("Build + upload") {
+      steps {
+        script {
+          docker_runs = withEnv(["CONAN_HOOK_ERROR_LEVEL=40"]) {
+            parallel docker_runs.collectEntries { id, values ->
+              def (docker_image, profile) = values
+                ["${id}": get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, user_channel, config_url)]
             }
+          }
         }
-        stage("Retrieve and publish build info") {
-            docker.image("conanio/gcc8").inside("--net=docker_jenkins_artifactory") {
-                sh "pip install git+git://github.com/czoido/conan.git@hackaton_branch"
-                def server = Artifactory.server artifactory_name
-                def last_info = ""
-                docker_runs.each { id, values ->
-                    unstash id
-                    sh "cat ${id}.json"
-                    if (last_info != "") {
-                        sh "conan_build_info --v2 update ${id}.json ${last_info} --output-file mergedbuildinfo.json"
-                        sh "cat mergedbuildinfo.json"
-                    }
-                    last_info = "${id}.json"
-                }
-                // TODO: configure credentials properly
-                String publish_build_info = "conan_build_info --v2 publish --url ${server.url} --user admin --password password mergedbuildinfo.json"
-                sh publish_build_info
-            }
-        }
-
-        stage("Launch job-graph") {
-            def scmVars = checkout scm
-
-            stage("Trigger dependents jobs") {
-                unstash "full_reference"
-                sh "cat search_output.json"
-                
-                def props = readJSON file: "search_output.json"
-                def revision = props[0]['revision']
-                def reference = "${name}/${version}@${user_channel}#${revision}"
-                echo "Full reference: '${reference}'"
-
-                def repository = scmVars.GIT_URL.tokenize('/')[3].split("\\.")[0]
-                def sha1 = scmVars.GIT_COMMIT
-                projects.each {project_id -> 
-                    def json = """{"parameter": [{"name": "reference", "value": "${reference}"}, \
-                                                    {"name": "project_id", "value": "${project_id}"}, \
-                                                    {"name": "organization", "value": "${organization}"}, \
-                                                    {"name": "repository", "value": "${repository}"}, \
-                                                    {"name": "sha1", "value": "${sha1}"} \
-                                                    ]}"""
-                    withCredentials([usernamePassword(credentialsId: 'job-graph', passwordVariable: 'pass', usernameVariable: 'user')]) {
-                        // TODO: FIXME: user pass from credentials 
-                        def jenkins_user_token = "admin:1180edb4037ce3fb2dae7260d2cf4ddcb2"
-                        if (env.JENKINS_USER_TOKEN) {
-                            jenkins_user_token = "${env.JENKINS_USER_TOKEN}"
-                        }
-                        def url = "${env.JENKINS_URL}job/test_project/build"
-                        sh "curl -u ${jenkins_user_token} -v POST ${url} --data-urlencode json='${json}'"
-                    }                            
-                }
-            }
-        }
+      }
     }
-    finally {
-        deleteDir()
-    }
-}
 
+    stage("Retrieve and publish build info") {
+      agent any
+
+      steps {
+        script {
+          docker.image("conanio/gcc8").inside("--net=host") {
+            def server = Artifactory.server artifactory_name
+              def last_info = ""
+              docker_runs.each { id, buildInfo ->
+                // Work around conan_build_info wrongly "escaping" colons (:) with backslashes in the build name
+                buildInfo['name'] = buildInfo['name'].replace('\\:', ':')
+
+                  writeJSON file: "${id}.json", json: buildInfo
+                  if (last_info != "") {
+                    sh "conan_build_info --v2 update ${id}.json ${last_info} --output-file mergedbuildinfo.json"
+                  }
+                last_info = "${id}.json"
+              }
+            withCredentials([usernamePassword(credentialsId: 'hack-tt-artifactory', usernameVariable: 'CONAN_LOGIN_USERNAME', passwordVariable: 'CONAN_PASSWORD')]) {
+              sh """\
+                cat mergedbuildinfo.json
+                conan_build_info --v2 publish --url ${server.url} --user \"\${CONAN_LOGIN_USERNAME}\" --password \"\${CONAN_PASSWORD}\" mergedbuildinfo.json
+                """
+            }
+          }
+        }
+      }
+
+      post {
+        always {
+          deleteDir()
+        }
+      }
+    }
+
+    stage("Launch job-graph") {
+      steps {
+        script {
+          stage("Trigger dependents jobs") {
+            def reference = "${name}/${version}@${user_channel}#${reference_revision}"
+              echo "Full reference: '${reference}'"
+
+              parallel projects.collectEntries {project_id -> 
+                ["${project_id}": {
+                  build(job: "${currentBuild.fullProjectName.tokenize('/')[0]}/jenkins/master", propagate: true, parameters: [
+                      [$class: 'StringParameterValue', name: 'reference',    value: reference   ],
+                      [$class: 'StringParameterValue', name: 'project_id',   value: project_id  ],
+                      [$class: 'StringParameterValue', name: 'organization', value: organization],
+                      [$class: 'StringParameterValue', name: 'repository',   value: repository  ],
+                      [$class: 'StringParameterValue', name: 'sha1',         value: sha1        ],
+                  ])
+                }]
+              }
+          }
+        }
+      }
+    }
+  }
+}
