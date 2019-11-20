@@ -1,2 +1,2 @@
-demo-ci-conan :: libC
+demo-ci-conan :: libJ
 =====================
