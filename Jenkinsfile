@@ -13,7 +13,7 @@ docker_runs["conanio-gcc8_temp"] = ["conanio/gcc8", "conanio-gcc8"]
 docker_runs["conanio-gcc7_temp"] = ["conanio/gcc7", "conanio-gcc7"]
 
 ArrayList line_split(String text) {
-  return text.split('\\r?\\n') as ArrayList
+  return text.split('\\r?\\n').findAll{it.size() > 0} as ArrayList
 }
 
 def organization = "demo-ci-conan"
@@ -75,7 +75,7 @@ cat search_output.json
                         }
 
                         echo("Upload packages")
-                        client.run(command: "upload ${repository} --all -r ${remoteName} --confirm  --force".toString())
+                        client.run(command: "upload '*' --all -r ${remoteName} --confirm  --force".toString())
 
                         echo("Create build info")
                         def buildInfoFilename = "${id}.json"
