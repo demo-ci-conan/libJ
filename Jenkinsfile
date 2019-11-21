@@ -60,8 +60,10 @@ def get_stages(id, docker_image, artifactory_name, artifactory_repo, profile, us
                         name = sh (script: "conan inspect . --raw name", returnStdout: true).trim()
                         version = sh (script: "conan inspect . --raw version", returnStdout: true).trim()
 
+                        def lockfile_url = "${server.url}/hackathonv5-metadata/${name}/${version}@${user_channel}/${profile}/conan.lock"
+                        def lockfile_sha1 = sha1(file: lockfile)
                         withCredentials([usernamePassword(credentialsId: 'hack-tt-artifactory', usernameVariable: 'CONAN_LOGIN_USERNAME', passwordVariable: 'CONAN_PASSWORD')]) {
-                          sh "curl --user \"\${CONAN_LOGIN_USERNAME}\":\"\${CONAN_PASSWORD}\" --header 'X-Checksum-Sha1:'${shell_quote(sha1(file: lockfile))} --header 'Content-Type: application/json' ${shell_quote(server.url)}/hackathonv5-metadata/${shell_quote(name)}/${shell_quote(version)}@${shell_quote(user_channel)}/${shell_quote(profile)}/conan.lock --upload-file ${shell_quote(lockfile)}"
+                          sh "curl --user \"\${CONAN_LOGIN_USERNAME}\":\"\${CONAN_PASSWORD}\" --header 'X-Checksum-Sha1:'${shell_quote(lockfile_sha1)} --header 'Content-Type: application/json' ${shell_quote(lockfile_url)} --upload-file ${shell_quote(lockfile)}"
                         }
 
                         if (id=="conanio-gcc8") {// TODO fix this
@@ -86,6 +88,10 @@ cat search_output.json
                         // Work around conan_build_info wrongly "escaping" colons (:) with backslashes in the build name
                         def buildInfo = readJSON(file: buildInfoFilename)
                         buildInfo['name'] = buildInfo['name'].replace('\\:', ':')
+                        buildInfo['modules'][0]['artifacts'].add([
+                          sha1: lockfile_sha1,
+                          name: lockfile_url.tokenize('/')[-1],
+                        ])
 
                         buildInfo['vcs'] = [[revision: scmVars.GIT_COMMIT, url: scmVars.GIT_URL]]
 
@@ -136,6 +142,16 @@ pipeline {
                 sha1 = buildInfo['vcs'][0]['revision']
                 repository = buildInfo['vcs'][0]['url'].tokenize('/')[3].split("\\.")[0]
               }
+              def buildInfo = readJSON(file: 'mergedbuildinfo.json')
+              buildInfo['agent'] = [
+                  name: 'Jenkins',
+                  version: Jenkins.version as String,
+                ]
+              buildInfo['url'] = BUILD_URL
+              def started = new Date(currentBuild.startTimeInMillis)
+              buildInfo['started'] = started.format('yyyy-MM-dd\'T\'HH:mm:ss.SSSXXX')
+              buildInfo['durationMillis'] = currentBuild.duration
+              writeJSON(file: 'mergedbuildinfo.json', json: buildInfo)
             unstash 'full_reference'
             def props = readJSON file: "search_output.json"
             reference_revision = props[0]['revision']
